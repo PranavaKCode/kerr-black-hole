@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.blend
+*.blend1
+*.exr
+*.png
+*.jpg
+*.npy
+*.npz
+node_modules/
+webgl/dist/
+slurm-*.out

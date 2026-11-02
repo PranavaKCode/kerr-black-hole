@@ -1,0 +1,8 @@
+# analysis and capture scripts; the blender scripts run inside blender 5.2
+numpy>=2.0
+scipy
+opencv-python
+pillow
+matplotlib
+numba
+playwright

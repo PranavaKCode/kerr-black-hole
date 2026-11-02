@@ -1,0 +1,491 @@
+// kerr black hole as a cycles world shader. each camera ray starts in the zamo tetrad at the
+// camera, is integrated backwards along the null geodesic with the separable hamiltonian
+//   2 Sigma H = Delta p_r^2 + p_th^2 - P^2/Delta + (L - a E sin^2th)^2 / sin^2th = 0,  P = (r^2+a^2) E - a L
+// in mino time (rk4), and is radiatively transferred through a volumetric disk: a blackbody at T
+// is seen as a blackbody at g*T (I_nu/nu^3 invariant). escaping rays sample a lensed sky.
+// units G = c = M = 1, hole at the origin, spin axis +z, 1 blender unit = 1 M.
+
+color bb_rgb(float Tin)
+{
+    // table from gen_blackbody_table.py: planck x cie 1931 -> linear rec.709,
+    // T = exp(linspace(log 1000, log 100000, 48)), log luminance relative to 6500 K
+    float BB_LOGY[48] = {-20.8487, -18.6467, -16.6325, -14.7909, -13.1079, -11.5706, -10.1671, -8.88637, -7.71817, -6.65306, -5.68233, -4.79792, -3.99239, -3.25883, -2.59086, -1.98255, -1.4284, -0.923282, -0.462438, -0.0414487, 0.343774, 0.696995, 1.02167, 1.32093, 1.59763, 1.85435, 2.09336, 2.31673, 2.52626, 2.72357, 2.91008, 3.08703, 3.25553, 3.41654, 3.57091, 3.71938, 3.86263, 4.00121, 4.13565, 4.26638, 4.39381, 4.5183, 4.64014, 4.75962, 4.87697, 4.99243, 5.10617, 5.21839};
+    float BB_R[48] = {4.03007, 3.77987, 3.53111, 3.29223, 3.06891, 2.86452, 2.68059, 2.49322, 2.28947, 2.10389, 1.93592, 1.78469, 1.64917, 1.52825, 1.42079, 1.32567, 1.24178, 1.16809, 1.10358, 1.0473, 0.998339, 0.955857, 0.919064, 0.887236, 0.85972, 0.835931, 0.815352, 0.797529, 0.782072, 0.76864, 0.756947, 0.746744, 0.737821, 0.73, 0.72313, 0.717081, 0.711744, 0.707025, 0.702845, 0.699135, 0.695837, 0.6929, 0.69028, 0.687941, 0.685849, 0.683977, 0.682298, 0.680792};
+    float BB_G[48] = {0.199836, 0.274242, 0.348219, 0.419257, 0.485668, 0.546451, 0.601146, 0.655261, 0.71124, 0.760862, 0.804311, 0.841889, 0.87398, 0.901022, 0.923478, 0.941826, 0.956543, 0.968094, 0.97693, 0.983477, 0.988129, 0.991245, 0.993144, 0.994103, 0.994355, 0.994092, 0.993468, 0.992605, 0.991595, 0.990507, 0.989394, 0.988289, 0.987217, 0.986194, 0.98523, 0.98433, 0.983494, 0.982723, 0.982015, 0.981366, 0.980773, 0.980232, 0.97974, 0.979292, 0.978885, 0.978516, 0.978181, 0.977877};
+    float BB_B[48] = {0, 0, 0, 0, 0, 0, 0, 0.0159049, 0.0616269, 0.116765, 0.181204, 0.254482, 0.335822, 0.424183, 0.518311, 0.616802, 0.718156, 0.820846, 0.923379, 1.02436, 1.12252, 1.21682, 1.30642, 1.3907, 1.46928, 1.54199, 1.60881, 1.66988, 1.72544, 1.77579, 1.82128, 1.8623, 1.89921, 1.93238, 1.96218, 1.98893, 2.01293, 2.03448, 2.05382, 2.07118, 2.08677, 2.10078, 2.11338, 2.12471, 2.1349, 2.14408, 2.15234, 2.15979};
+    float T = clamp(Tin, 1000.0, 99999.0);
+    float x = (log(T) - log(1000.0)) / (log(100000.0) - log(1000.0)) * 47.0;
+    int i = int(floor(x));
+    i = clamp(i, 0, 46);
+    float f = x - float(i);
+    float ly = mix(BB_LOGY[i], BB_LOGY[i + 1], f);
+    color ch = color(mix(BB_R[i], BB_R[i + 1], f), mix(BB_G[i], BB_G[i + 1], f), mix(BB_B[i], BB_B[i + 1], f));
+    return ch * exp(ly);
+}
+
+// hamilton's equations in mino time (d lambda = Sigma d sigma), E = -p_t and L = p_phi conserved
+void kerr_rhs(float a, float E, float L, float r, float th, float pr, float pth,
+              output float dr, output float dth, output float dph, output float dt,
+              output float dpr, output float dpth)
+{
+    float s = sin(th), c = cos(th);
+    if (abs(s) < 1e-6) s = (s < 0.0) ? -1e-6 : 1e-6;
+    float s2 = s * s;
+    float r2 = r * r, a2 = a * a;
+    float D = r2 - 2.0 * r + a2;
+    float Dp = 2.0 * r - 2.0;
+    float P = (r2 + a2) * E - a * L;
+    dr = D * pr;
+    dth = pth;
+    dph = a * P / D + L / s2 - a * E;
+    dt = (r2 + a2) * P / D + a * (L - a * E * s2);
+    dpr = 0.5 * (-Dp * pr * pr + 4.0 * r * E * P / D - P * P * Dp / (D * D));
+    dpth = c * (L * L / (s2 * s) - a2 * E * E * s);
+}
+
+float kerr_risco(float a)
+{
+    float z1 = 1.0 + pow(1.0 - a * a, 1.0 / 3.0) * (pow(1.0 + a, 1.0 / 3.0) + pow(max(1.0 - a, 0.0), 1.0 / 3.0));
+    float z2 = sqrt(3.0 * a * a + z1 * z1);
+    return 3.0 + z2 - sqrt(max((3.0 - z1) * (3.0 + z1 + 2.0 * z2), 0.0));
+}
+
+float fbm4(point p, float w, int oct)
+{
+    float sum = 0.0, amp = 0.5, norm = 0.0;
+    point q = p;
+    float ww = w;
+    for (int i = 0; i < oct; i++) {
+        sum += amp * noise("perlin", q, ww);
+        norm += amp;
+        amp *= 0.5;
+        q = q * 2.03 + point(1.7, 9.2, 3.1);
+        ww = ww * 2.03 + 0.37;
+    }
+    return sum / norm;            // ~[-1,1]
+}
+
+float ridged4(point p, float w, int oct)
+{
+    float sum = 0.0, amp = 0.5, norm = 0.0;
+    point q = p;
+    float ww = w;
+    for (int i = 0; i < oct; i++) {
+        float n = 1.0 - abs(noise("perlin", q, ww));
+        sum += amp * n * n;
+        norm += amp;
+        amp *= 0.5;
+        q = q * 2.11 + point(5.3, 1.1, 7.7);
+        ww = ww * 2.11 + 0.71;
+    }
+    return sum / norm;            // [0,1], thin bright ridges
+}
+
+vector cube_dir(int face, float u, float v)
+{
+    vector d = vector(1, u, v);
+    if (face == 1) d = vector(-1, u, v);
+    else if (face == 2) d = vector(u, 1, v);
+    else if (face == 3) d = vector(u, -1, v);
+    else if (face == 4) d = vector(u, v, 1);
+    else if (face == 5) d = vector(u, v, -1);
+    return normalize(d);
+}
+
+color star_layer(vector d, float N, float prob, float seed, float sigma, float bright_pow)
+{
+    vector ad = vector(abs(d[0]), abs(d[1]), abs(d[2]));
+    int face; float u, v;
+    if (ad[0] >= ad[1] && ad[0] >= ad[2]) { face = (d[0] > 0) ? 0 : 1; u = d[1] / ad[0]; v = d[2] / ad[0]; }
+    else if (ad[1] >= ad[2])              { face = (d[1] > 0) ? 2 : 3; u = d[0] / ad[1]; v = d[2] / ad[1]; }
+    else                                  { face = (d[2] > 0) ? 4 : 5; u = d[0] / ad[2]; v = d[1] / ad[2]; }
+    float gu = (u * 0.5 + 0.5) * N, gv = (v * 0.5 + 0.5) * N;
+    float cu = floor(gu), cv = floor(gv);
+    point cell = point(cu, cv, float(face) * 7.0 + seed * 131.0);
+    vector rnd = cellnoise(cell);
+    float rnd2 = cellnoise(cell + point(17.0, 3.0, 41.0));
+    if (rnd2 > prob) return color(0);
+    // star position inside the cell, kept away from the border so one cell suffices
+    float su = (cu + 0.15 + 0.7 * rnd[0]) / N * 2.0 - 1.0;
+    float sv = (cv + 0.15 + 0.7 * rnd[1]) / N * 2.0 - 1.0;
+    vector sd = cube_dir(face, su, sv);
+    float d2 = dot(d - sd, d - sd);
+    if (d2 > 49.0 * sigma * sigma) return color(0);
+    float flux = pow(max(rnd[2], 1e-4), bright_pow);           // steep power-law luminosity function
+    float tq = cellnoise(cell + point(91.0, 57.0, 13.0));
+    float Ts = 2600.0 + 11000.0 * tq * tq;                      // mostly warm stars, a few hot blue ones
+    color c = bb_rgb(Ts);
+    c = c / max(0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], 1e-12);
+    // flux-normalised psf: sigma follows the pixel size, so a star's integrated flux does not depend
+    // on resolution; lensing stretches the blob and so brightens it
+    return c * flux * exp(-0.5 * d2 / (sigma * sigma)) * (2.5e-9 / (sigma * sigma));
+}
+
+color sky(vector d, float StarBright, float StarSize, float StarDensity, float GalBright, vector GalNormal, float GalWidth)
+{
+    color col = 0;
+    // galactic frame: gn = pole, (e1, e2) span the plane
+    vector gn = normalize(GalNormal);
+    vector helper = (abs(gn[2]) < 0.9) ? vector(0, 0, 1) : vector(1, 0, 0);
+    vector e1 = normalize(cross(helper, gn));
+    vector e2 = cross(gn, e1);
+    float sb = dot(d, gn);                                   // sin(galactic latitude)
+    float x1 = dot(d, e1), x2 = dot(d, e2);
+    float w = GalWidth;
+    float band = exp(-0.5 * sb * sb / (w * w));
+    float halo = exp(-0.5 * sb * sb / (9.0 * w * w));
+    if (GalBright > 0.0 && halo > 1e-4) {
+        // noise stretched along galactic longitude
+        float ks = 1.6 / w;
+        point q = point(x1 * ks * 0.12, x2 * ks * 0.12, sb * ks);
+        float wl = 0.6 * w * (1.0 + 0.5 * fbm4(q * 0.5, 7.7, 3));      // ragged band edge
+        float core = exp(-0.5 * sb * sb / (wl * wl));
+        float clouds = 0.5 + 0.5 * fbm4(q, 3.1, 6);
+        float fine = 0.5 + 0.5 * fbm4(q * 3.1 + point(2.0, 7.0, 1.0), 1.7, 4);
+        float lanes = ridged4(q * 0.9 + point(4.0, 0.0, 1.0), 1.3, 4);
+        float dust = smoothstep(0.55, 0.95, lanes) * exp(-0.5 * sb * sb / (0.5 * w * 0.5 * w));
+        float lum = (0.035 * halo + core * (0.25 + 1.4 * clouds * clouds * (0.6 + 0.8 * fine))) * (1.0 - 0.75 * dust);
+        color warm = color(1.0, 0.80, 0.58), cool = color(0.62, 0.72, 1.0);
+        color tint = mix(cool, warm, clamp(core * clouds * 1.3, 0.0, 1.0));
+        float neb = smoothstep(0.72, 0.9, 0.5 + 0.5 * fbm4(q * 1.9 + point(9.0, 3.0, 5.0), 4.2, 4)) * core;
+        col += GalBright * (lum * tint + 0.6 * neb * (1.0 - dust) * color(1.0, 0.32, 0.38));
+    }
+    if (StarBright > 0.0) {
+        float dens = 1.0 + 2.0 * band + 0.6 * halo;      // more stars along the band
+        float N0 = StarDensity;
+        col += star_layer(d, N0 * 0.37, 0.55, 1.0, StarSize, 6.0) * 8.0;
+        col += star_layer(d, N0, min(0.22 * dens, 1.0), 2.0, StarSize, 6.0) * 1.5;
+        col += star_layer(d, N0 * 2.3, min(0.10 * dens, 1.0), 3.0, StarSize, 5.0) * 0.4;
+        col *= StarBright;
+    }
+    return col;
+}
+
+// DebugMode: 1 image order, 2 redshift map, 3 capture mask, 4 integration cost, 6 lensed sky only
+shader kerr_bh(
+    float Spin = 0.99                    [[ string label = "Spin a", float min = 0.0, float max = 0.999 ]],
+    float DiskInner = 1.0                [[ string label = "Disk Inner Edge (x ISCO)", float min = 1.0, float max = 8.0 ]],
+    float DiskOuter = 34.0               [[ string label = "Disk Outer Radius (M)", float min = 4.0, float max = 80.0 ]],
+    float DiskThickness = 0.02          [[ string label = "Disk Thickness H/R", float min = 0.002, float max = 0.3 ]],
+    float Turbulence = 1.0               [[ string label = "Turbulence", float min = 0.0, float max = 1.0 ]],
+    float Swirl = 90.0                  [[ string label = "Shear Time (M)", float min = 0.0, float max = 2000.0 ]],
+    float Time = 0.0                     [[ string label = "Time (M)" ]],
+    float PeakTemp = 7500.0              [[ string label = "Peak Temperature (K)", float min = 1500.0, float max = 40000.0 ]],
+    float DiskBrightness = 1.0           [[ string label = "Disk Brightness", float min = 0.0, float max = 100.0 ]],
+    float DiskOpacity = 2.0              [[ string label = "Disk Opacity", float min = 0.0, float max = 50.0 ]],
+    float PlungeBrightness = 0.35        [[ string label = "Plunging Flow", float min = 0.0, float max = 2.0 ]],
+    float DustLanes = 1.0                [[ string label = "Dust Lanes", float min = 0.0, float max = 1.0 ]],
+    float IrradTemp = 5000.0                [[ string label = "Irradiation T at 10M (K)", float min = 0.0, float max = 20000.0 ]],
+    float TempProfile = 0.75             [[ string label = "Temperature Exponent", float min = 0.3, float max = 1.2 ]],
+    float Doppler = 1.0                  [[ string label = "Doppler / Beaming", float min = 0.0, float max = 1.0 ]],
+    float GravRedshift = 1.0             [[ string label = "Gravitational Redshift", float min = 0.0, float max = 1.0 ]],
+    float StarBrightness = 1.6           [[ string label = "Star Brightness", float min = 0.0, float max = 100.0 ]],
+    float StarSize = 20.0                [[ string label = "Star Size (microrad)", float min = 0.1, float max = 10000.0 ]],
+    float StarDensity = 600.0            [[ string label = "Star Density", float min = 10.0, float max = 20000.0 ]],
+    float GalaxyBrightness = 0.02        [[ string label = "Galaxy Brightness", float min = 0.0, float max = 10.0 ]],
+    vector GalaxyNormal = vector(0.42, 0.0, -0.91) [[ string label = "Galaxy Plane Normal" ]],
+    float GalaxyWidth = 0.06            [[ string label = "Galaxy Width (rad)", float min = 0.002, float max = 1.0 ]],
+    float Accuracy = 0.04                [[ string label = "Step Size", float min = 0.005, float max = 0.2 ]],
+    float VolumeStep = 0.2              [[ string label = "Volume Step (x H)", float min = 0.05, float max = 2.0 ]],
+    int MaxSteps = 3000                  [[ string label = "Step Budget", int min = 100, int max = 20000 ]],
+    int DebugMode = 0                    [[ string label = "Debug Mode", int min = 0, int max = 6 ]],
+    output color Color = 0,
+    output float Alpha = 0)
+{
+    float a = clamp(Spin, 0.0, 0.9995);
+    float a2 = a * a;
+    float rh = 1.0 + sqrt(1.0 - a2);
+    float risco = kerr_risco(a);
+    float rphp = 2.0 * (1.0 + cos(2.0 / 3.0 * acos(-a)));           // prograde equatorial photon orbit
+    float rterm = rh + 0.25 * (rphp - rh);
+    float rin = risco * DiskInner;
+    float rout = DiskOuter;
+    float hh = DiskThickness;
+
+    // isco orbit constants for the plunging flow inside the isco
+    float sq = sqrt(risco);
+    float den = pow(risco, 0.75) * sqrt(max(risco * sq - 3.0 * sq + 2.0 * a, 1e-6));
+    float Eisco = (risco * sq - 2.0 * sq + a) / den;
+    float Lisco = (risco * risco - 2.0 * a * sq + a2) / den;
+
+    // novikov-thorne-like temperature normalisation: x^-p (1 - x^-1/2)^1/4 peaks at x = ((8p+1)/8p)^2
+    float xpk = pow((8.0 * TempProfile + 1.0) / (8.0 * TempProfile), 2.0);
+    float fmax = pow(xpk, -TempProfile) * pow(1.0 - 1.0 / sqrt(xpk), 0.25);
+
+    // camera position from the blender camera, ray direction = P (world)
+    point C = transform("camera", "world", point(0, 0, 0));
+    vector d = normalize(P);
+    float rho2 = dot(C, C);
+    float zc = C[2];
+    float rc2 = 0.5 * ((rho2 - a2) + sqrt((rho2 - a2) * (rho2 - a2) + 4.0 * a2 * zc * zc));
+    float r = sqrt(max(rc2, 1e-8));
+    float th = acos(clamp(zc / r, -1.0, 1.0));
+    float ph = atan2(C[1], C[0]);
+    if (r < rh * 1.05) { Color = color(0); Alpha = 1.0; return; }
+
+    float st = sin(th), ct = cos(th);
+    vector er = vector(st * cos(ph), st * sin(ph), ct);
+    vector et = vector(ct * cos(ph), ct * sin(ph), -st);
+    vector ep = vector(-sin(ph), cos(ph), 0);
+    float nr = dot(d, er), nt = dot(d, et), np = dot(d, ep);
+
+    float Sg = r * r + a2 * ct * ct;
+    float Dl = r * r - 2.0 * r + a2;
+    float Ak = (r * r + a2) * (r * r + a2) - a2 * Dl * st * st;
+    float alpha = sqrt(Sg * Dl / Ak);
+    float omega = 2.0 * a * r / Ak;
+    float varpi = sqrt(Ak / Sg) * st;
+    // the physical photon arrives along -d with E = 1; we trace p = -k (E = -1)
+    float Eloc = 1.0 / (alpha - omega * varpi * np);
+    float E = -1.0;
+    float L = varpi * np * Eloc;          // traced L, physical L = -L
+    float Lphys = -L;
+    float pr = sqrt(Sg / Dl) * nr * Eloc;
+    float pth = sqrt(Sg) * nt * Eloc;
+    float tt = 0.0;                        // coordinate time along the traced ray (negative = past)
+    // carter constant, used to re-project p_r onto the null constraint after every step with
+    //   R(r) = E^2 r^4 + (a^2E^2 - L^2 - Q) r^2 + 2[(aE - L)^2 + Q] r - a^2 Q
+    // in float32 the hamiltonian form loses the impact parameter at large r; without this the
+    // shadow seen from r = 1000 M comes out ~0.6 % too large
+    float Qc = pth * pth + ct * ct * (L * L / (st * st) - a2 * E * E);
+
+    // reference time so that Time is when light left the hole's vicinity (tortoise coordinate of the camera)
+    float tref = r + 2.0 * log(max(r / 2.0 - 1.0, 1e-3));
+    float rnd = cellnoise(point(d * 3712345.7) + point(0.3, 0.7, 0.1));  // per-sample jitter
+    color Iacc = 0;
+    float Tr = 1.0;
+    int crossings = 0;
+    float prevz = r * ct;
+    // fold theta into [0, pi/2] (symmetry theta -> pi - theta, p_th -> -p_th) and remember the
+    // hemisphere, so float32 keeps its precision for sin(theta) near both poles
+    float hemi = 1.0;
+    if (th > M_PI_2) { th = M_PI - th; pth = -pth; hemi = -1.0; }
+    int fate = 0;                          // 0 = budget, 1 = captured, 2 = escaped
+    int steps = 0;
+    float Rbound = rout * 1.6 + 2.0;
+    float Resc = max(Rbound * 1.5, 60.0);
+    float zmaxf = 4.5;                     // disk bounding slab: |z| < zmaxf * H
+
+    for (int i = 0; i < MaxSteps; i++) {
+        steps = i;
+        float k1r, k1t, k1p, k1tt, k1pr, k1pt;
+        kerr_rhs(a, E, L, r, th, pr, pth, k1r, k1t, k1p, k1tt, k1pr, k1pt);
+
+        // termination
+        if (r < rh * 1.0005 || (r < rterm && k1r < 0.0)) { fate = 1; break; }
+        if (r > Resc && k1r > 0.0) { fate = 2; break; }
+
+        float s = sin(th), c = cos(th);
+        float Rc = r * abs(s);
+        float zz = hemi * r * c;
+        float H = hh * max(Rc, 0.5);
+
+        // step size from a euclidean target length. the azimuthal rate leaves out the a P / Delta
+        // frame-dragging term: phi winds up without bound at the horizon but is cyclic, so it must
+        // not throttle the step; only the L / sin^2 pole term needs resolving
+        float s2c = max(s * s, 1e-12);
+        float kpf = L / s2c - a * E;
+        float v = sqrt(k1r * k1r + r * r * (k1t * k1t + s * s * kpf * kpf)) + 1e-12;
+        float ds = Accuracy * max(r - rh, 0.002);
+        int inVol = (Rc < Rbound && abs(zz) < zmaxf * H + 0.05 && r > rh * 1.002) ? 1 : 0;
+        float vz = abs(k1r * c - r * s * k1t) / v;               // |dz/ds|
+        if (inVol) {
+            ds = min(ds, min(VolumeStep * H / max(vz, 0.05), 0.35));
+        } else if (Rc < Rbound) {
+            // approaching the slab: never jump over it
+            float dz = abs(zz) - zmaxf * H;
+            ds = min(ds, max(0.7 * dz / max(vz, 1e-3), 0.02));
+        }
+        float h = ds / v;
+        h = min(h, 0.06 / (abs(k1t) + 1e-12));
+        // near a pole theta may move by at most 10 % of its distance to the pole
+        h = min(h, 0.1 * max(abs(s), 1e-4) / (abs(k1t) + 1e-12));
+        h = min(h, 0.06 / (abs(kpf) + 1e-12));
+
+        // volumetric radiative transfer at a jittered point inside the step
+        if (inVol && DebugMode != 3 && DebugMode != 6) {
+            float fu = rnd * h;
+            float rs = r + k1r * fu, ths = th + k1t * fu, phs = ph + k1p * fu, ts = tt + k1tt * fu;
+            float ss = sin(ths), cs = cos(ths);
+            float Rs = rs * abs(ss), zs = hemi * rs * cs;
+            float Hs = hh * max(Rs, 0.5);
+            if (abs(zs) < zmaxf * Hs && Rs > rh) {
+                // gas: keplerian prograde circular orbits outside the isco, geodesic plunge
+                // with the isco's (E, L) inside it
+                int plunge = (Rs < risco) ? 1 : 0;
+                float Om = 0.0, ut_p = 0.0, up_p = 0.0, ur_p = 0.0;
+                if (!plunge) {
+                    Om = 1.0 / (pow(Rs, 1.5) + a);
+                } else {
+                    float R2 = Rs * Rs;
+                    float DlR = R2 - 2.0 * Rs + a2;
+                    float AkR = (R2 + a2) * (R2 + a2) - a2 * DlR;
+                    float Gtt = -AkR / (R2 * DlR);
+                    float Gtp = -2.0 * a * Rs / (R2 * DlR);
+                    float Gpp = (DlR - a2) / (R2 * DlR);
+                    ut_p = -Gtt * Eisco + Gtp * Lisco;
+                    up_p = -Gtp * Eisco + Gpp * Lisco;
+                    float urr = (-1.0 - (Gtt * Eisco * Eisco - 2.0 * Gtp * Eisco * Lisco + Gpp * Lisco * Lisco)) * DlR / R2;
+                    ur_p = -sqrt(max(urr, 0.0));
+                    Om = up_p / ut_p;
+                }
+                // turbulence in co-rotating, sheared coordinates at the emission time t_em = Time + t_ray + t_ref
+                float temis = Time + ts + tref;
+                float php = phs - Om * (Swirl + temis);
+                float lr = log(Rs);
+                point q = point(2.6 * cos(php), 2.6 * sin(php), 7.0 * lr);
+                float nv = 0.5 + 0.5 * fbm4(q * 0.6 + point(11.0, 5.0, 3.0), 0.37, 3);
+                float Heff = Hs * (0.55 + 0.8 * nv);                  // puffy, uneven scale height
+                float vert = exp(-0.5 * zs * zs / (Heff * Heff));
+                if (vert > 1e-4) {
+                    // redshift g = nu_obs / nu_em (doppler + gravitational + frame dragging)
+                    float Sgs = rs * rs + a2 * cs * cs;
+                    float Dls = rs * rs - 2.0 * rs + a2;
+                    float Aks = (rs * rs + a2) * (rs * rs + a2) - a2 * Dls * ss * ss;
+                    float gtt = -(1.0 - 2.0 * rs / Sgs);
+                    float gtp = -2.0 * a * rs * ss * ss / Sgs;
+                    float gpp = Aks * ss * ss / Sgs;
+                    float alph = sqrt(max(Sgs * Dls / Aks, 1e-12));
+                    float omg = 2.0 * a * rs / Aks;
+                    float ggrav = alph / max(1.0 - omg * Lphys, 1e-6);   // zamo-relative part
+                    float g = 0.0;
+                    if (!plunge) {
+                        float nrm = -(gtt + 2.0 * Om * gtp + Om * Om * gpp);
+                        float ut = 1.0 / sqrt(max(nrm, 1e-8));
+                        g = 1.0 / (ut * (1.0 - Om * Lphys));
+                    } else {
+                        float prs = pr + k1pr * fu;
+                        float kr = -prs;           // physical covariant k_r
+                        float Eem = ut_p - Lphys * up_p - kr * ur_p;
+                        g = 1.0 / max(Eem, 1e-6);
+                    }
+                    g = max(g, 1e-4);
+                    float dopp = g / ggrav;
+                    float gused = pow(ggrav, GravRedshift) * pow(dopp, Doppler);
+
+                    float wz = zs / Heff * 0.6;
+                    // log-normal turbulent density: multi-octave fbm plus soft filaments (ridges of one |fbm|)
+                    float n1 = fbm4(q, wz, 6);
+                    float n2 = fbm4(q * 2.9 + point(7.0, 3.0, 5.0), wz * 1.9, 4);
+                    float frd = 1.0 - abs(fbm4(q * 1.6 + point(3.0, 1.0, 2.0), wz * 1.3, 5));
+                    float fil = frd * frd * frd * frd;
+                    float clump = clamp(0.5 + 0.5 * n1 * 1.8, 0.0, 1.0);
+                    float lnrho = 1.8 * n1 + 1.4 * n2 + 1.8 * (fil - 0.35) - 0.5;
+                    float tq = exp(Turbulence * lnrho);
+
+                    float edge_in = smoothstep(rin * 0.97, rin * 1.06, Rs);
+                    float edge_out = 1.0 - smoothstep(rout * 0.55, rout, Rs);
+                    float surf = pow(Rs / rin, -0.7) * edge_out;
+
+                    // dust lanes: wavy, broken annuli of cooler absorbing gas at fixed radii, so the lensed
+                    // geometry reads as rings warped over the shadow
+                    float lanes = 0.0;
+                    if (DustLanes > 0.0) {
+                        float wob = 0.035 * noise("perlin", point(cos(php) * 1.3, sin(php) * 1.3, lr * 3.0));
+                        float l1 = exp(-0.5 * pow((lr + wob - log(6.6)) / 0.035, 2.0));
+                        float l2 = exp(-0.5 * pow((lr + wob - log(10.2)) / 0.045, 2.0));
+                        float l3 = exp(-0.5 * pow((lr + wob - log(15.5)) / 0.05, 2.0));
+                        float l4 = exp(-0.5 * pow((lr + wob - log(23.0)) / 0.07, 2.0));
+                        float brk = smoothstep(-0.35, 0.25, noise("perlin", point(cos(php) * 2.2, sin(php) * 2.2, lr * 6.0)));
+                        lanes = DustLanes * clamp((l1 + 0.9 * l2 + 0.85 * l3 + 0.7 * l4) * brk, 0.0, 1.0);
+                    }
+
+                    float x = Rs / risco;
+                    float Temp;
+                    float rhoD;
+                    if (!plunge) {
+                        float fx = pow(x, -TempProfile) * pow(max(1.0 - 1.0 / sqrt(x), 0.0), 0.25) / fmax;
+                        float Tv = PeakTemp * max(fx, 0.0);
+                        // irradiation of the flared outer disk by the inner disk, T_irr ~ R^-1/2
+                        float Ti = IrradTemp * pow(Rs / 10.0, -0.5) * smoothstep(rin, rin * 2.0, Rs);
+                        // hotter clumps and filaments give texture even where tau >> 1
+                        Temp = pow(pow(Tv, 4.0) + pow(Ti, 4.0), 0.25) * (0.86 + 0.24 * clump) * (0.93 + 0.17 * fil) * (1.0 - 0.45 * lanes);
+                        rhoD = surf * edge_in * vert * tq;
+                    } else {
+                        // faint plunging flow, fading toward the horizon
+                        float fr = clamp((Rs - rh) / max(risco - rh, 1e-3), 0.0, 1.0);
+                        Temp = PeakTemp * 0.62 * pow(fr, 0.35) * (0.85 + 0.3 * clump);
+                        rhoD = PlungeBrightness * 0.5 * fr * fr * vert * tq;
+                    }
+                    // optical depth in the emitter frame: d tau = alpha dl, dl = |d lambda| / g
+                    float dlam = Sgs * h;
+                    float kappa = DiskOpacity * 2.0 / max(Rs, 1.0) * (1.0 + 2.5 * lanes);
+                    float dtau = kappa * rhoD * dlam / g;
+                    if (dtau > 1e-7) {
+                        float Tobs = gused * Temp;
+                        color Bsrc = bb_rgb(Tobs) * DiskBrightness * (1.0 - 0.9 * lanes);
+                        float absorb = 1.0 - exp(-dtau);
+                        color contrib = Tr * absorb * Bsrc;
+                        if (DebugMode == 1) {          // image order: equatorial-plane crossings
+                            color oc = (crossings == 0) ? color(1.0, 0.55, 0.15) : ((crossings == 1) ? color(0.15, 0.75, 1.0) : ((crossings == 2) ? color(1.0, 0.25, 0.75) : color(1.0)));
+                            contrib = Tr * absorb * oc;
+                        } else if (DebugMode == 2) {   // redshift map: blue g > 1, white g = 1, red g < 1
+                            float xg = clamp(log(g) / log(2.0) / 0.7, -1.0, 1.0);
+                            color gc = (xg < 0.0) ? mix(color(0.95, 0.92, 0.88), color(1.0, 0.18, 0.03), -xg) : mix(color(0.95, 0.92, 0.88), color(0.08, 0.3, 1.0), xg);
+                            contrib = Tr * absorb * gc;
+                        }
+                        Iacc += contrib;
+                        Tr *= exp(-dtau);
+                    }
+                }
+            }
+            if (Tr < 2e-4) break;
+        }
+
+        // rk4 step
+        float k2r, k2t, k2p, k2tt, k2pr, k2pt;
+        kerr_rhs(a, E, L, r + 0.5 * h * k1r, th + 0.5 * h * k1t, pr + 0.5 * h * k1pr, pth + 0.5 * h * k1pt, k2r, k2t, k2p, k2tt, k2pr, k2pt);
+        float k3r, k3t, k3p, k3tt, k3pr, k3pt;
+        kerr_rhs(a, E, L, r + 0.5 * h * k2r, th + 0.5 * h * k2t, pr + 0.5 * h * k2pr, pth + 0.5 * h * k2pt, k3r, k3t, k3p, k3tt, k3pr, k3pt);
+        float k4r, k4t, k4p, k4tt, k4pr, k4pt;
+        kerr_rhs(a, E, L, r + h * k3r, th + h * k3t, pr + h * k3pr, pth + h * k3pt, k4r, k4t, k4p, k4tt, k4pr, k4pt);
+        float h6 = h / 6.0;
+        r   += h6 * (k1r + 2.0 * k2r + 2.0 * k3r + k4r);
+        th  += h6 * (k1t + 2.0 * k2t + 2.0 * k3t + k4t);
+        ph  += h6 * (k1p + 2.0 * k2p + 2.0 * k3p + k4p);
+        tt  += h6 * (k1tt + 2.0 * k2tt + 2.0 * k3tt + k4tt);
+        pr  += h6 * (k1pr + 2.0 * k2pr + 2.0 * k3pr + k4pr);
+        pth += h6 * (k1pt + 2.0 * k2pt + 2.0 * k3pt + k4pt);
+        {   // constraint projection (skipped near radial turning points)
+            float Dn = r * r - 2.0 * r + a2;
+            float aEL = a * E - L;
+            float Rr = E * E * r * r * r * r + (a2 * E * E - L * L - Qc) * r * r + 2.0 * (aEL * aEL + Qc) * r - a2 * Qc;
+            if (Rr > 0.0 && Dn > 0.0) {
+                float pn = sqrt(Rr) / Dn;
+                if (abs(pn - abs(pr)) < 0.05 * pn) pr = (pr < 0.0) ? -pn : pn;
+            }
+        }
+
+        if (th > M_PI_2) { th = M_PI - th; pth = -pth; hemi = -hemi; }   // crossed the equator
+        if (th < 0.0) { th = -th; pth = -pth; ph += M_PI; }               // passed over a pole
+        float znew = hemi * r * cos(th);
+        if (znew * prevz < 0.0) crossings += 1;
+        prevz = znew;
+    }
+
+    // escaped rays sample the sky along their final direction
+    color bg = 0;
+    if (fate == 2) {
+        float kr0, kt0, kp0, ktt0, kpr0, kpt0;
+        kerr_rhs(a, E, L, r, th, pr, pth, kr0, kt0, kp0, ktt0, kpr0, kpt0);
+        float s = sin(th), c = hemi * cos(th);         // physical theta (unfolded)
+        kt0 *= hemi;
+        vector R1 = vector(s * cos(ph), s * sin(ph), c);
+        vector T1 = vector(c * cos(ph), c * sin(ph), -s);
+        vector P1 = vector(-sin(ph), cos(ph), 0);
+        vector dir = normalize(kr0 * R1 + r * kt0 * T1 + r * s * kp0 * P1);
+        bg = sky(dir, StarBrightness, StarSize * 1e-6, StarDensity, GalaxyBrightness, GalaxyNormal, GalaxyWidth);
+    }
+
+    if (DebugMode == 3) {               // escape / capture mask (validation), red = step budget ran out
+        Color = (fate == 2) ? color(1) : ((fate == 1) ? color(0) : color(1, 0, 0));
+    } else if (DebugMode == 4) {        // integration cost
+        float x = float(steps) / float(MaxSteps);
+        Color = color(x, sqrt(x), 1.0 - x) * 0.8;
+    } else if (DebugMode == 6) {        // lensed sky only, no disk
+        Color = bg;
+    } else {
+        Color = Iacc + Tr * bg;
+    }
+    Alpha = 1.0 - Tr * ((fate == 2) ? 1.0 : 0.0);
+}

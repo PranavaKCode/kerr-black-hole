@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kerr</title>
+<meta name="description" content="Real-time WebGL2 ray tracer of a rotating (Kerr) black hole: null geodesics in curved spacetime, a volumetric accretion disk with relativistic Doppler beaming and redshift, photon rings and the D-shaped shadow.">
+<meta name="theme-color" content="#030305">
+<style>/*@@CSS@@*/</style>
+</head>
+<body>
+<canvas id="gl" aria-label="Real-time render of a Kerr black hole"></canvas>
+<canvas id="overlay" aria-hidden="true"></canvas>
+<div id="loading">preparing the ray tracer…</div>
+
+<div id="titleblock">
+  <h1>Kerr</h1>
+  <p id="caption"></p>
+</div>
+
+<button id="hide" title="Hide / show interface (H)" aria-label="Toggle interface"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M5 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+
+<aside id="panel" aria-label="Controls">
+  <header>
+    <div class="brand"><span class="dot"></span>Controls</div>
+    <button id="about-btn" class="ghost">About</button>
+  </header>
+  <div id="presets"></div>
+  <div id="doppler" class="feature">
+    <div class="dlabels"><span>Film · no Doppler</span><span>Physical</span></div>
+    <div id="dswatch"></div>
+  </div>
+  <div id="groups"></div>
+</aside>
+
+<div id="hud"><span id="status"></span><span class="hint">drag · orbit &nbsp;&nbsp; shift-drag · pan &nbsp;&nbsp; scroll · zoom &nbsp;&nbsp; H · hide &nbsp;&nbsp; C · Bardeen curve</span></div>
+<div id="legend" aria-live="polite"></div>
+<div id="probe" aria-hidden="true"></div>
+<div id="toast" role="status"></div>
+
+<div id="about" role="dialog" aria-modal="true" aria-labelledby="about-title">
+  <div class="card">
+    <button id="about-close" class="ghost" aria-label="Close">Close</button>
+    <h2 id="about-title">Kerr</h2>
+    <p class="lede">Each pixel traces a Kerr null geodesic backwards from the camera.</p>
+    <h4>What you are seeing</h4>
+    <ul>
+      <li><b>Gravitational lensing.</b> The far side of the disk is bent up over and under the shadow.</li>
+      <li><b>Doppler beaming.</b> Gas orbiting towards you is blueshifted and brightened (≈ g⁴), gas receding is
+        reddened and dimmed. The slider morphs from Nolan's symmetric film look (0) to the physical result (1).</li>
+      <li><b>Photon ring.</b> Thin rings hugging the shadow are light that circled the hole once, twice…</li>
+      <li><b>D-shaped shadow.</b> At high spin, prograde photons orbit closer: the shadow flattens on the
+        approaching side. Toggle the analytic Bardeen curve to compare.</li>
+      <li><b>Frame dragging.</b> The inner disk and the plunging gas inside the ISCO are swept round with the spin.</li>
+    </ul>
+    <h4>Try this</h4>
+    <ul>
+      <li>Slide <b>Doppler &amp; beaming</b> from 0 (film look) to 1 (physical).</li>
+      <li><b>Hover</b> the image: each pixel reports where its light came from — emission radius, redshift g, image order — or how far starlight was bent.</li>
+      <li>Switch <b>View → Rays</b> to see the lensing orders, or press <b>C</b> to overlay the analytic shadow.</li>
+      <li>Drag <b>Orbital time</b> (Accretion disk) to let the gas orbit: the inner disk overtakes the outer disk.</li>
+    </ul>
+    <h4>How it works</h4>
+    <p>Null geodesics of the Kerr metric are integrated with the Boyer–Lindquist Hamiltonian
+      (E = 1, L and Carter's Q conserved) in Mino time, with the angular motion written as a unit vector and an
+      angular-momentum vector so the poles are regular. RK4 with an adaptive step (∝ distance to the horizon,
+      refined near the disk). The camera is a zero-angular-momentum observer, so its local frame is exact.
+      Along each ray the disk is integrated as a volume — emission and absorption — and the invariance of
+      I<sub>ν</sub>/ν³ means the observed spectrum is a blackbody at g·T, converted to colour with the CIE 1931
+      observer. Gas follows circular Keplerian orbits Ω = 1/(r<sup>3/2</sup>+a) outside the ISCO and
+      plunging geodesics inside it; its turbulence lives in differentially sheared co-rotating coordinates.
+      Stars are analytic points filtered by the lensing Jacobian, so their magnification is automatic.</p>
+    <p class="honest">Artistic choices: visible-range disk temperatures (real disks peak in X-rays), turbulence,
+      dust lanes, photon-ring emphasis. Geodesics, shadow, Doppler and gravitational shifts and beaming are physical.</p>
+    <h4>Credits</h4>
+    <p class="credits">Bardeen (1973) critical curve · Luminet (1979) · Novikov &amp; Thorne (1973) ·
+      James, von Tunzelmann, Franklin &amp; Thorne (2015), <i>Gravitational lensing by spinning black holes</i> ·
+      Wyman, Sloan &amp; Shirley (2013) CIE fit · AgX view transform (T. Sobotka) · inspired by a Blender
+      “glass-shell” lensing tutorial, made physical here.</p>
+  </div>
+</div>
+
+<div id="nogl"><div class="card"><h2>Kerr</h2><p id="nogl-msg"></p><img src="fallback.jpg" alt="Still render of the Kerr black hole"></div></div>
+
+<script>
+  // optional web font (inter, ofl), injected after load so offline / file:// never blocks
+  addEventListener('load', () => { const l = document.createElement('link'); l.rel = 'stylesheet';
+    l.href = 'https://cdn.jsdelivr.net/npm/@fontsource-variable/inter@5/index.css'; document.head.appendChild(l); });
+</script>
+<script>/*@@SHADERS@@*/</script>
+<script>/*@@APP@@*/</script>
+</body>
+</html>
